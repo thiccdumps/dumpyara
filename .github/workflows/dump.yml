@@ -48,4 +48,4 @@ jobs:
 
       - name: Run dumpyara
         run: |
-          bash dumpyara.sh ${{ inputs.urls }}
+          bash dumpyara.sh '${{ inputs.urls }}'

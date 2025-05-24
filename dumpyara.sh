@@ -53,9 +53,9 @@ else
 fi
 
 ORG=Jiovanni-dump #your GitHub org name
-FILE=$(echo ${URL##*/} | inline-detox)
-EXTENSION=$(echo ${URL##*.} | inline-detox)
-UNZIP_DIR=${FILE/.$EXTENSION/}
+FILE=$(ls "$PROJECT_DIR"/input/)
+EXTENSION=$(echo "$FILE" | rev | cut -d. -f1 | rev)
+UNZIP_DIR=${FILE%.*}
 PARTITIONS="system systemex system_ext system_other vendor cust odm odm_ext oem factory product modem xrom oppo_product opproduct reserve india my_preload my_odm my_stock my_operator my_country my_product my_company my_engineering my_heytap my_custom my_manifest my_carrier my_region my_bigball my_version special_preload vendor_dlkm odm_dlkm system_dlkm mi_ext"
 
 if [[ -d "$1" ]]; then
@@ -260,20 +260,59 @@ if [[ -n $GIT_OAUTH_TOKEN ]]; then
     git checkout -b "$branch"
     find . -size +97M -printf '%P\n' -o -name "*sensetime*" -printf '%P\n' -o -name "*.lic" -printf '%P\n' >| .gitignore
     compressed_files=()
-    while IFS= read -r file_path; do
+    tmp_dir=$(mktemp -d)
+    num_cores=$(nproc 2>/dev/null || echo 4)
+
+    compress_file() {
+        local file_path="$1"
+        local job_id="$2"
+        local status_file="${tmp_dir}/${job_id}.status"
+
         if [ -f "$file_path" ] && [[ "$file_path" != *.apex ]] && [[ "$file_path" != *.opex ]]; then
             if [[ "$file_path" == *"$pattern"* ]]; then
-                compressed_file="${file_path}.xz"
-                zstd --ultra -22 --long -M512 -T0 "$file_path" -o "$compressed_file"
-                file_size=$(du -b "$compressed_file" | cut -f1)
+                local compressed_file="${file_path}.xz"
+                zstdmt --ultra -22 --long -M512 "$file_path" -o "$compressed_file"
+                local file_size=$(du -b "$compressed_file" | cut -f1)
                 if [ "$file_size" -le $((99 * 1024 * 1024)) ]; then # 99M
-                    compressed_files+=("$compressed_file")
+                    echo "$compressed_file" > "$status_file"
                 else
                     rm -rf "${compressed_file}"
+                    echo "" > "$status_file"
                 fi
+            else
+                echo "" > "$status_file"
+            fi
+        else
+            echo "" > "$status_file"
+        fi
+    }
+
+    job_id=0
+    running_jobs=0
+
+    while IFS= read -r file_path; do
+        if [ $running_jobs -ge $num_cores ]; then
+            wait -n
+            running_jobs=$((running_jobs - 1))
+        fi
+
+        compress_file "$file_path" "$job_id" &
+        running_jobs=$((running_jobs + 1))
+        job_id=$((job_id + 1))
+    done < .gitignore
+
+    wait
+
+    for i in $(seq 0 $((job_id - 1))); do
+        status_file="${tmp_dir}/${i}.status"
+        if [ -f "$status_file" ]; then
+            compressed_file=$(cat "$status_file")
+            if [ -n "$compressed_file" ]; then
+                compressed_files+=("$compressed_file")
             fi
         fi
-    done < .gitignore
+    done
+    rm -rf "$tmp_dir"
     printf '%s\n' "${compressed_files[@]}" > compressed_files.txt
     cat > extract_files.sh << 'EOF'
 #!/bin/bash
